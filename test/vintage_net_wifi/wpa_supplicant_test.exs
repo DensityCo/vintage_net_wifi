@@ -47,6 +47,26 @@ defmodule VintageNetWiFi.WPASupplicantTest do
     assert hd(MockWPASupplicant.get_requests(context.mock)) == "ATTACH"
   end
 
+  test "adopts a prestarted wpa_supplicant", context do
+    MockWPASupplicant.set_responses(context.mock, %{
+      "ATTACH" => "OK\n",
+      "BSS 0" => ""
+    })
+
+    _ =
+      start_supervised!(
+        {WPASupplicant,
+         wpa_supplicant: "/definitely/not/a/wpa_supplicant",
+         wpa_supplicant_conf_path: "/dev/null",
+         ifname: "test_wlan0",
+         control_path: context.socket_path,
+         handoff: [marker_path: Path.join(context.socket_path, "handoff"), timeout: 0]}
+      )
+
+    Process.sleep(100)
+    assert hd(MockWPASupplicant.get_requests(context.mock)) == "ATTACH"
+  end
+
   test "pings wpa_supplicant", context do
     MockWPASupplicant.set_responses(context.mock, %{
       "ATTACH" => "OK\n",

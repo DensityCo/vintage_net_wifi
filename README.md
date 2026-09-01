@@ -67,6 +67,37 @@ support.
 
 ## Advanced usage
 
+### Adopting a prestarted wpa_supplicant
+
+Systems that need to overlap WiFi association with VM startup can launch
+`wpa_supplicant` before BEAM and have VintageNetWiFi adopt it. Configure the
+handoff per interface:
+
+```elixir
+config :vintage_net_wifi,
+  wpa_supplicant_handoff: %{
+    "wlan0" => [
+      config_path: "/root/vintage_net/wpa_supplicant.conf.wlan0",
+      mac_path: "/root/vintage_net/wlan0.mac",
+      marker_path: "/tmp/vintage_net/wpa_supplicant.handoff.wlan0",
+      timeout: 10_000
+    ]
+  }
+```
+
+VintageNetWiFi atomically synchronizes the persistent config and optional MAC
+files with mode `0600`. The early launcher must create `:marker_path` before it
+waits for the interface, start `wpa_supplicant` with `:config_path`, apply the
+MAC from `:mac_path` when present, and remove the marker after startup.
+VintageNetWiFi adopts an existing control socket, waits for a claimed startup,
+or cancels the marker and starts its own process on timeout. Reconfiguration
+and deconfiguration terminate the adopted process and remove the persistent
+files.
+
+This stores the generated supplicant configuration persistently. It can contain
+network credentials, so the containing filesystem and device access policy must
+be appropriate even though the file is restricted to the root user.
+
 WiFi network interfaces typically have names like `"wlan0"` or `"wlan1"` when
 using Nerves. Most of the time, there's only one WiFi interface and its
 `"wlan0"`. Some WiFi adapters expose separate interfaces for 2.4 GHz and 5 GHz

@@ -5,6 +5,12 @@
 
 # Changelog
 
+## Unreleased
+
+* Changes
+  * Add a race-safe handoff for adopting a `wpa_supplicant` started before
+    BEAM, including fallback startup and persistent config/MAC lifecycle.
+
 ## v0.12.11 - 2026-07-15
 
 This release adds a mechanism for per-device customizations to cookbook
@@ -318,4 +324,3 @@ creating the configs for various kinds of networks.
 Initial `vintage_net_wifi` release. See the [`vintage_net v0.7.0` release
 notes](https://github.com/nerves-networking/vintage_net/releases/tag/v0.7.0)
 for upgrade instructions if you are a `vintage_net v0.6.x` user.
-

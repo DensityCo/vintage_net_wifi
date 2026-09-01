@@ -32,6 +32,7 @@ defmodule VintageNetWiFi.WPASupplicant do
     make sure it's still alive (defaults to 60,000 seconds)
   * `:ap_mode` - true if the WiFi module and wpa_supplicant are
     in access point mode
+  * `:handoff` - options for adopting a prestarted wpa_supplicant, or `nil`
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(args) do
@@ -92,6 +93,7 @@ defmodule VintageNetWiFi.WPASupplicant do
     keep_alive_interval = Keyword.get(args, :keep_alive_interval, 60000)
     ap_mode = Keyword.get(args, :ap_mode, false)
     verbose = Keyword.get(args, :verbose, false)
+    handoff = Keyword.get(args, :handoff)
 
     state = %{
       wpa_supplicant: wpa_supplicant,
@@ -101,6 +103,7 @@ defmodule VintageNetWiFi.WPASupplicant do
       ifname: ifname,
       ap_mode: ap_mode,
       verbose: verbose,
+      handoff: handoff,
       access_points: %{},
       clients: [],
       peers: [],
@@ -120,9 +123,11 @@ defmodule VintageNetWiFi.WPASupplicant do
     # control files appear.
     control_paths = get_control_paths(state)
 
-    # Start the supplicant
+    handoff_adopted = handoff_available?(control_paths, state.handoff)
+
+    # Start the supplicant unless a pre-BEAM process is ready for handoff.
     {:ok, _supplicant} =
-      if state.wpa_supplicant != "" do
+      if state.wpa_supplicant != "" and not handoff_adopted do
         # FIXME: This appears to be needed when restarting the wpa_supplicant.
         # It is an imperfect fix to an issue when running AP mode. Sometimes
         # AP mode would look like it came up, but you couldn't connect to it.
@@ -690,6 +695,28 @@ defmodule VintageNetWiFi.WPASupplicant do
 
   defp get_control_paths(%{control_dir: dir, ifname: ifname}) do
     [Path.join(dir, ifname)]
+  end
+
+  defp handoff_available?(_control_paths, nil), do: false
+
+  defp handoff_available?(control_paths, handoff) do
+    cond do
+      Enum.any?(control_paths, &File.exists?/1) ->
+        true
+
+      is_binary(marker_path = handoff[:marker_path]) and File.exists?(marker_path) ->
+        timeout = Keyword.get(handoff, :timeout, 10_000)
+
+        if wait_for_control_file(control_paths, timeout) == [] do
+          _ = File.rm(marker_path)
+          false
+        else
+          true
+        end
+
+      true ->
+        false
+    end
   end
 
   defp wait_for_control_file(paths, time_left \\ 3000)

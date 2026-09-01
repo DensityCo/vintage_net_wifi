@@ -87,6 +87,7 @@ defmodule VintageNetWiFi do
   alias VintageNetWiFi.MacAddress
   alias VintageNetWiFi.WPA2
   alias VintageNetWiFi.WPASupplicant
+  alias VintageNetWiFi.WPASupplicant.Handoff
 
   require Logger
 
@@ -397,6 +398,7 @@ defmodule VintageNetWiFi do
   def to_raw_config(ifname, %{type: __MODULE__} = config, opts) do
     tmpdir = Keyword.fetch!(opts, :tmpdir)
     regulatory_domain = Keyword.fetch!(opts, :regulatory_domain)
+    handoff = handoff_config(ifname)
 
     wpa_supplicant_conf_path = Path.join(tmpdir, "wpa_supplicant.conf.#{ifname}")
     control_interface_dir = Path.join(tmpdir, "wpa_supplicant")
@@ -406,23 +408,31 @@ defmodule VintageNetWiFi do
 
     normalized_config = normalize(config)
 
-    files = [
-      {wpa_supplicant_conf_path,
-       wifi_to_supplicant_contents(
-         normalized_config.vintage_net_wifi,
-         control_interface_dir,
-         regulatory_domain
-       )}
-    ]
+    wpa_supplicant_contents =
+      wifi_to_supplicant_contents(
+        normalized_config.vintage_net_wifi,
+        control_interface_dir,
+        regulatory_domain
+      )
+
+    files = [{wpa_supplicant_conf_path, wpa_supplicant_contents}]
+
+    managed_conf_path =
+      if handoff, do: Keyword.fetch!(handoff, :config_path), else: wpa_supplicant_conf_path
 
     wpa_supplicant_options = [
       wpa_supplicant: "wpa_supplicant",
       ifname: ifname,
-      wpa_supplicant_conf_path: wpa_supplicant_conf_path,
+      wpa_supplicant_conf_path: managed_conf_path,
       control_path: control_interface_dir,
       ap_mode: ap_mode,
       verbose: verbose
     ]
+
+    wpa_supplicant_options =
+      if handoff,
+        do: Keyword.put(wpa_supplicant_options, :handoff, handoff),
+        else: wpa_supplicant_options
 
     %RawConfig{
       ifname: ifname,
@@ -430,7 +440,7 @@ defmodule VintageNetWiFi do
       source_config: normalized_config,
       required_ifnames: required_ifnames(ifname, config),
       files: files,
-      cleanup_files: control_interface_paths,
+      cleanup_files: if(handoff, do: [], else: control_interface_paths),
       restart_strategy: :rest_for_one,
       up_cmds: up_cmds(ifname, config),
       down_cmds: down_cmds(ifname, config),
@@ -438,13 +448,58 @@ defmodule VintageNetWiFi do
         {WPASupplicant, wpa_supplicant_options}
       ]
     }
-    |> add_mac_address_config(normalized_config)
+    |> add_handoff_config(handoff, wpa_supplicant_contents, control_interface_paths)
+    |> add_mac_address_config(normalized_config, handoff)
     |> IPv4Config.add_config(normalized_config, opts)
     |> DhcpdConfig.add_config(normalized_config, opts)
     |> DnsdConfig.add_config(normalized_config, opts)
   end
 
-  defp add_mac_address_config(raw_config, %{mac_address: mac_address}) do
+  defp handoff_config(ifname) do
+    case Application.get_env(:vintage_net_wifi, :wpa_supplicant_handoff, %{}) do
+      %{^ifname => options} when is_list(options) ->
+        options
+        |> Keyword.put_new(
+          :marker_path,
+          "/tmp/vintage_net/wpa_supplicant.handoff.#{ifname}"
+        )
+        |> Keyword.put_new(:timeout, 10_000)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp add_handoff_config(raw_config, nil, _contents, _control_paths), do: raw_config
+
+  defp add_handoff_config(raw_config, handoff, contents, control_paths) do
+    config_path = Keyword.fetch!(handoff, :config_path)
+    mac_path = Keyword.get(handoff, :mac_path)
+    resolved_mac = resolved_mac(raw_config.source_config)
+
+    install = {:fun, Handoff, :install, [config_path, contents, mac_path, resolved_mac]}
+
+    stop_and_remove =
+      {:fun, Handoff, :stop_and_remove, [control_paths, config_path, mac_path]}
+
+    ensure_mac =
+      if resolved_mac do
+        [{:fun, Handoff, :ensure_mac, [raw_config.ifname, resolved_mac, control_paths]}]
+      else
+        []
+      end
+
+    %{
+      raw_config
+      | up_cmds: raw_config.up_cmds ++ [install] ++ ensure_mac,
+        down_cmds: [stop_and_remove | raw_config.down_cmds]
+    }
+  end
+
+  defp add_mac_address_config(raw_config, _config, handoff) when not is_nil(handoff),
+    do: raw_config
+
+  defp add_mac_address_config(raw_config, %{mac_address: mac_address}, nil) do
     resolved_mac = resolve_mac(mac_address)
 
     if MacAddress.valid?(resolved_mac) do
@@ -472,7 +527,26 @@ defmodule VintageNetWiFi do
     end
   end
 
-  defp add_mac_address_config(raw_config, _config), do: raw_config
+  defp add_mac_address_config(raw_config, _config, nil), do: raw_config
+
+  defp resolved_mac(%{mac_address: mac_address}) do
+    case resolve_mac(mac_address) do
+      resolved when is_binary(resolved) ->
+        if MacAddress.valid?(resolved) do
+          String.downcase(resolved)
+        else
+          Logger.warning("vintage_net_wifi: ignoring invalid MAC address '#{inspect(resolved)}'")
+
+          nil
+        end
+
+      error ->
+        Logger.warning("vintage_net_wifi: ignoring invalid MAC address '#{inspect(error)}'")
+        nil
+    end
+  end
+
+  defp resolved_mac(_config), do: nil
 
   defp resolve_mac({m, f, args}) do
     apply(m, f, args)

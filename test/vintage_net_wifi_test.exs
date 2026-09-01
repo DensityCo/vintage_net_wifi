@@ -2824,6 +2824,81 @@ defmodule VintageNetWiFiTest do
     assert log =~ "ignoring invalid MAC address"
   end
 
+  test "prestarted supplicant handoff persists config and avoids disrupting its socket" do
+    previous_handoff = Application.get_env(:vintage_net_wifi, :wpa_supplicant_handoff)
+
+    on_exit(fn ->
+      if previous_handoff do
+        Application.put_env(:vintage_net_wifi, :wpa_supplicant_handoff, previous_handoff)
+      else
+        Application.delete_env(:vintage_net_wifi, :wpa_supplicant_handoff)
+      end
+    end)
+
+    handoff = [
+      config_path: "/root/vintage_net/wpa_supplicant.conf.wlan0",
+      mac_path: "/root/vintage_net/wlan0.mac",
+      marker_path: "/tmp/vintage_net/wpa_supplicant.handoff.wlan0",
+      timeout: 7_500
+    ]
+
+    Application.put_env(:vintage_net_wifi, :wpa_supplicant_handoff, %{"wlan0" => handoff})
+
+    input = %{
+      type: VintageNetWiFi,
+      mac_address: {String, :downcase, ["AA:BB:CC:DD:EE:FF"]},
+      vintage_net_wifi: %{networks: [%{ssid: "guest", key_mgmt: :none}]},
+      ipv4: %{method: :dhcp},
+      hostname: "unit_test"
+    }
+
+    raw_config = VintageNetWiFi.to_raw_config("wlan0", input, default_opts())
+
+    assert raw_config.cleanup_files == []
+
+    assert {VintageNetWiFi.WPASupplicant, supplicant_options} =
+             hd(raw_config.child_specs)
+
+    assert supplicant_options[:wpa_supplicant_conf_path] ==
+             "/root/vintage_net/wpa_supplicant.conf.wlan0"
+
+    assert supplicant_options[:handoff] == handoff
+
+    assert Enum.any?(raw_config.up_cmds, fn
+             {:fun, VintageNetWiFi.WPASupplicant.Handoff, :install,
+              [
+                "/root/vintage_net/wpa_supplicant.conf.wlan0",
+                contents,
+                "/root/vintage_net/wlan0.mac",
+                "aa:bb:cc:dd:ee:ff"
+              ]}
+             when is_binary(contents) ->
+               true
+
+             _ ->
+               false
+           end)
+
+    assert {:fun, VintageNetWiFi.WPASupplicant.Handoff, :ensure_mac,
+            [
+              "wlan0",
+              "aa:bb:cc:dd:ee:ff",
+              ["/tmp/vintage_net/wpa_supplicant/wlan0"]
+            ]} in raw_config.up_cmds
+
+    assert {:fun, VintageNetWiFi.WPASupplicant.Handoff, :stop_and_remove,
+            [
+              ["/tmp/vintage_net/wpa_supplicant/wlan0"],
+              "/root/vintage_net/wpa_supplicant.conf.wlan0",
+              "/root/vintage_net/wlan0.mac"
+            ]} in raw_config.down_cmds
+
+    refute Enum.any?(raw_config.up_cmds, fn
+             {:run, "ip", ["link", "set", "wlan0", "address", _]} -> true
+             _ -> false
+           end)
+  end
+
   test "generating QR strings" do
     assert VintageNetWiFi.qr_string("Nerves", "IsCool") ==
              "WIFI:S:Nerves;T:WPA;P:IsCool;;"

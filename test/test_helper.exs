@@ -11,6 +11,7 @@ defmodule Utils do
 end
 
 File.rm_rf!("test/tmp")
+File.mkdir_p!("test_tmp")
 
 # Networking support has enough pieces that are singleton in nature
 # that parallel running of tests can't be done.
