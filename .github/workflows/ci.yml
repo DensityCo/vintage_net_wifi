@@ -27,6 +27,11 @@ jobs:
           otp-version: 29.0.2
           elixir-version: 1.20.2-otp-29
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libmnl-dev pkg-config
+
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
